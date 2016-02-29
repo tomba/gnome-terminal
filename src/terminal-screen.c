@@ -136,6 +136,8 @@ static void terminal_screen_system_font_changed_cb (GSettings *,
 static gboolean terminal_screen_popup_menu (GtkWidget *widget);
 static gboolean terminal_screen_button_press (GtkWidget *widget,
                                               GdkEventButton *event);
+static gboolean terminal_screen_button_release (GtkWidget *widget,
+                                                GdkEventButton *event);
 static gboolean terminal_screen_do_exec (TerminalScreen *screen,
                                          FDSetupData    *data,
                                          GError **error);
@@ -441,6 +443,7 @@ terminal_screen_class_init (TerminalScreenClass *klass)
   widget_class->style_updated = terminal_screen_style_updated;
   widget_class->drag_data_received = terminal_screen_drag_data_received;
   widget_class->button_press_event = terminal_screen_button_press;
+  widget_class->button_release_event = terminal_screen_button_release;
   widget_class->popup_menu = terminal_screen_popup_menu;
 
   terminal_class->child_exited = terminal_screen_child_exited;
@@ -1472,33 +1475,59 @@ terminal_screen_button_press (GtkWidget      *widget,
         return TRUE; /* don't do anything else such as select with the click */
     }
 
-  if (event->type == GDK_BUTTON_PRESS && event->button == 3)
-    {
-      if (!(event->state & (GDK_SHIFT_MASK | GDK_CONTROL_MASK | GDK_MOD1_MASK)))
-        {
-          /* on right-click, we should first try to send the mouse event to
-           * the client, and popup only if that's not handled. */
-          if (button_press_event && button_press_event (widget, event))
-            return TRUE;
+  if (event->button == 3) {
+     if ((state & (GDK_SHIFT_MASK | GDK_CONTROL_MASK | GDK_MOD1_MASK)) != 0)
+     {
+         TerminalScreenPopupInfo *info;
+         info = terminal_screen_popup_info_new (screen);
+         info->button = event->button;
+         info->state = state;
+         info->timestamp = event->time;
+         info->string = matched_string; /* adopted */
+         info->flavour = matched_flavor;
 
-          terminal_screen_do_popup (screen, event, matched_string, matched_flavor);
-          matched_string = NULL; /* adopted to the popup info */
-          return TRUE;
-        }
-      else if (!(event->state & (GDK_CONTROL_MASK | GDK_MOD1_MASK)))
-        {
-          /* do popup on shift+right-click */
-          terminal_screen_do_popup (screen, event, matched_string, matched_flavor);
-          matched_string = NULL; /* adopted to the popup info */
-          return TRUE;
-        }
-    }
+         g_signal_emit (screen, signals[SHOW_POPUP_MENU], 0, info);
+         terminal_screen_popup_info_unref (info);
+
+         return TRUE;
+     } else {
+         vte_terminal_paste_clipboard (VTE_TERMINAL (screen));
+         return TRUE;
+     }
+  }
 
   /* default behavior is to let the terminal widget deal with it */
   if (button_press_event)
     return button_press_event (widget, event);
 
   return FALSE;
+}
+
+static gboolean
+terminal_screen_button_release (GtkWidget      *widget,
+       GdkEventButton *event)
+{
+   gboolean ret;
+
+   TerminalScreen *screen = TERMINAL_SCREEN (widget);
+   gboolean (* button_release_event) (GtkWidget*, GdkEventButton*) =
+       GTK_WIDGET_CLASS (terminal_screen_parent_class)->button_release_event;
+
+   ret = FALSE;
+   if (button_release_event) {
+       ret = button_release_event (widget, event);
+   }
+
+   if (event->button == 1) {
+       gboolean can_copy;
+
+       can_copy = vte_terminal_get_has_selection (VTE_TERMINAL (screen));
+
+       if (can_copy)
+           vte_terminal_copy_clipboard (VTE_TERMINAL (screen));
+   }
+
+   return ret;
 }
 
 /**
